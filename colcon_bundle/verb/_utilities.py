@@ -26,7 +26,7 @@ class Timer:
         self.end = time.clock()
         self.interval = self.end - self.start
         with open("timing.txt", "a") as myfile:
-            myfile.write(self.name + " " + str(self.interval))
+            myfile.write(self.name + ": " + str(self.interval) + "\n")
 
 
 def update_shebang(path):
