@@ -6,6 +6,7 @@ import subprocess
 
 from colcon_bundle.installer import BundleInstallerExtensionPoint
 from colcon_bundle.verb import logger
+from colcon_bundle.verb._utilities import Timer
 
 
 class BasePipInstallerExtensionPoint(BundleInstallerExtensionPoint):
@@ -46,46 +47,47 @@ class BasePipInstallerExtensionPoint(BundleInstallerExtensionPoint):
         self._packages.remove(name)
 
     def install(self):  # noqa: D102
-        if len(self._packages) == 0:
-            logger.info('No dependencies to install for {}'.format(
-                os.path.basename(self._python_path)
-            ))
-            return {'installed_packages': []}
+        with Timer('{} install'.format(self._pip_args)):
+            if len(self._packages) == 0:
+                logger.info('No dependencies to install for {}'.format(
+                    os.path.basename(self._python_path)
+                ))
+                return {'installed_packages': []}
 
-        logger.info('Installing pip3 dependencies...')
-        python_pip_args = [self._python_path, '-m', 'pip']
-        pip_install_args = python_pip_args + ['install']
-        subprocess.check_call(pip_install_args + ['-U', 'pip', 'setuptools'])
+            logger.info('Installing pip3 dependencies...')
+            python_pip_args = [self._python_path, '-m', 'pip']
+            pip_install_args = python_pip_args + ['install']
+            subprocess.check_call(pip_install_args + ['-U', 'pip', 'setuptools'])
 
-        requirements = os.path.join(self._cache_path, 'requirements')
-        with open(requirements, 'w') as req:
-            for name in self._packages:
-                req.write(name.strip() + '\n')
+            requirements = os.path.join(self._cache_path, 'requirements')
+            with open(requirements, 'w') as req:
+                for name in self._packages:
+                    req.write(name.strip() + '\n')
 
-        pip_args = []
-        pip_args += pip_install_args
-        pip_args += (self._pip_args or [])
-        pip_args += ['--ignore-installed', '-r', requirements]
-        subprocess.check_call(pip_args)
+            pip_args = []
+            pip_args += pip_install_args
+            pip_args += (self._pip_args or [])
+            pip_args += ['--ignore-installed', '-r', requirements]
+            subprocess.check_call(pip_args)
 
-        pip_freeze_args = python_pip_args + ['freeze']
+            pip_freeze_args = python_pip_args + ['freeze']
 
-        freeze_output = subprocess.check_output(
-            pip_freeze_args, universal_newlines=True)
+            freeze_output = subprocess.check_output(
+                pip_freeze_args, universal_newlines=True)
 
-        installed = list(map(
-            self.split_package_version,
-            filter(lambda s: s != '', freeze_output.split('\n'))))
-        metadata = {'installed_packages': installed}
+            installed = list(map(
+                self.split_package_version,
+                filter(lambda s: s != '', freeze_output.split('\n'))))
+            metadata = {'installed_packages': installed}
 
-        # https://pip.pypa.io/en/stable/reference/pip_download/
-        if self.context.args.include_sources:
-            sources_path = os.path.join(self._cache_path, 'sources')
-            download_args = python_pip_args + [
-                'download', '--no-binary', ':all',
-                '-d', sources_path, '-r', requirements]
-            subprocess.check_call(download_args)
-        return metadata
+            # https://pip.pypa.io/en/stable/reference/pip_download/
+            if self.context.args.include_sources:
+                sources_path = os.path.join(self._cache_path, 'sources')
+                download_args = python_pip_args + [
+                    'download', '--no-binary', ':all',
+                    '-d', sources_path, '-r', requirements]
+                subprocess.check_call(download_args)
+            return metadata
 
     @staticmethod
     def split_package_version(package_version):

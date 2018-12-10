@@ -11,6 +11,7 @@ from apt.package import FetchError
 from colcon_bundle.installer import BundleInstallerExtensionPoint
 from colcon_bundle.verb import logger
 from colcon_core.plugin_system import satisfies_version
+from colcon_bundle.verb._utilities import Timer
 
 
 class AptBundleInstallerExtension(BundleInstallerExtensionPoint):
@@ -81,38 +82,38 @@ class AptBundleInstallerExtension(BundleInstallerExtensionPoint):
 
     def setup(self):  # noqa: D102
         import apt
+        with Timer('apt update'):
+            apt.apt_pkg.config.set('APT::Install-Recommends', 'False')
+            apt.apt_pkg.config.set('Dir::Etc::Trusted',
+                                   apt.apt_pkg.config.find_file(
+                                       'Dir::Etc::Trusted'))
+            apt.apt_pkg.config.set('Dir::Etc::TrustedParts',
+                                   apt.apt_pkg.config.find_file(
+                                       'Dir::Etc::TrustedParts'))
+            apt.apt_pkg.config.clear('APT::Update::Post-Invoke-Success')
 
-        apt.apt_pkg.config.set('APT::Install-Recommends', 'False')
-        apt.apt_pkg.config.set('Dir::Etc::Trusted',
-                               apt.apt_pkg.config.find_file(
-                                   'Dir::Etc::Trusted'))
-        apt.apt_pkg.config.set('Dir::Etc::TrustedParts',
-                               apt.apt_pkg.config.find_file(
-                                   'Dir::Etc::TrustedParts'))
-        apt.apt_pkg.config.clear('APT::Update::Post-Invoke-Success')
+            sources_list_file = os.path.join(self._cache_dir, 'etc', 'apt',
+                                             'sources.list')
+            os.makedirs(os.path.dirname(sources_list_file), exist_ok=True)
 
-        sources_list_file = os.path.join(self._cache_dir, 'etc', 'apt',
-                                         'sources.list')
-        os.makedirs(os.path.dirname(sources_list_file), exist_ok=True)
+            with open(sources_list_file, 'w') as f:
+                with open(self.context.args.apt_sources_list, 'r') as sources:
+                    f.write(sources.read())
 
-        with open(sources_list_file, 'w') as f:
-            with open(self.context.args.apt_sources_list, 'r') as sources:
-                f.write(sources.read())
+            if self.include_sources:
+                os.makedirs(self.sources_path, exist_ok=True)
 
-        if self.include_sources:
-            os.makedirs(self.sources_path, exist_ok=True)
+            # We need to open and close the cache before calling update because
+            # of a bug
+            # if we don't do this then the update fails to pull anything from the
+            # remote repos
+            self._cache.open()
+            self._cache.close()
 
-        # We need to open and close the cache before calling update because
-        # of a bug
-        # if we don't do this then the update fails to pull anything from the
-        # remote repos
-        self._cache.open()
-        self._cache.close()
-
-        # Update the cache to the latest, we might not want to do this if the
-        # cache already exists?
-        self._cache.update()
-        self._cache.open()
+            # Update the cache to the latest, we might not want to do this if the
+            # cache already exists?
+            self._cache.update()
+            self._cache.open()
 
     def is_package_available(self, package_name):  # noqa: D102
         return self._cache[package_name] is not None
@@ -128,34 +129,35 @@ class AptBundleInstallerExtension(BundleInstallerExtensionPoint):
         package.mark_delete(auto_fix=False)
 
     def _fetch_packages(self):  # noqa: D102
-        packages = []
-        source_fetch_failures = []
-        for package in self._cache:
-            if package.marked_install:
-                if self.include_sources:
-                    package_version = package.versions[0]
-                    try:
-                        package_version.fetch_source(
-                            destdir=self.sources_path, unpack=False)
-                    except ValueError:
-                        source_fetch_failures.append(package.name)
-                        logger.error('No sources available for {}'.format(
-                            package.name
-                        ))
-                    except FetchFailedException as e:
-                        source_fetch_failures.append(package.name)
-                        logger.error('Failed to fetch sources for {}'.format(
-                            package.name))
-                        logger.error(e)
-                    except FetchError as e:
-                        source_fetch_failures.append(package.name)
-                        logger.error('Failed to fetch sources for {}'.format(
-                            package.name
-                        ))
-                        logger.error(e)
-                packages.append(package.name)
-        logger.info('Fetching packages: {packages}'.format_map(locals()))
-        self._cache.fetch_archives()
+        with Timer('apt download'):
+            packages = []
+            source_fetch_failures = []
+            for package in self._cache:
+                if package.marked_install:
+                    if self.include_sources:
+                        package_version = package.versions[0]
+                        try:
+                            package_version.fetch_source(
+                                destdir=self.sources_path, unpack=False)
+                        except ValueError:
+                            source_fetch_failures.append(package.name)
+                            logger.error('No sources available for {}'.format(
+                                package.name
+                            ))
+                        except FetchFailedException as e:
+                            source_fetch_failures.append(package.name)
+                            logger.error('Failed to fetch sources for {}'.format(
+                                package.name))
+                            logger.error(e)
+                        except FetchError as e:
+                            source_fetch_failures.append(package.name)
+                            logger.error('Failed to fetch sources for {}'.format(
+                                package.name
+                            ))
+                            logger.error(e)
+                    packages.append(package.name)
+            logger.info('Fetching packages: {packages}'.format_map(locals()))
+            self._cache.fetch_archives()
 
         if len(source_fetch_failures) > 0:
             self.metadata['missing_sources'] = source_fetch_failures
@@ -197,29 +199,30 @@ class AptBundleInstallerExtension(BundleInstallerExtensionPoint):
             self._cache_dir, 'var', 'cache', 'apt', 'archives')
         pkgs_abs_path = glob.glob(os.path.join(deb_cache, '*.deb'))
         print('Extracting apt packages...')
-        for pkg in pkgs_abs_path:
-            if os.path.basename(pkg) not in installed:
-                try:
-                    logger.info('Installing {package}'.format(package=pkg))
-                    subprocess.check_call(
-                        ['dpkg-deb', '--extract', pkg,
-                         self.context.prefix_path])
-                    installed.add(os.path.basename(pkg))
-                except subprocess.CalledProcessError:
-                    raise RuntimeError()
+        with Timer('apt extraction'):
+            for pkg in pkgs_abs_path:
+                if os.path.basename(pkg) not in installed:
+                    try:
+                        logger.info('Installing {package}'.format(package=pkg))
+                        subprocess.check_call(
+                            ['dpkg-deb', '--extract', pkg,
+                             self.context.prefix_path])
+                        installed.add(os.path.basename(pkg))
+                    except subprocess.CalledProcessError:
+                        raise RuntimeError()
 
-        with open(installed_cache_path, 'w') as f:
-            f.write(json.dumps(list(installed)))
+            with open(installed_cache_path, 'w') as f:
+                f.write(json.dumps(list(installed)))
 
-        installed_packages_metadata = []
-        for package in self._cache:
-            if package.marked_install:
-                installed_packages_metadata.append(
-                    {
-                        'name': package.shortname,
-                        'version': package.candidate.version
-                    }
-                )
-        self.metadata['installed_packages'] = installed_packages_metadata
+            installed_packages_metadata = []
+            for package in self._cache:
+                if package.marked_install:
+                    installed_packages_metadata.append(
+                        {
+                            'name': package.shortname,
+                            'version': package.candidate.version
+                        }
+                    )
+            self.metadata['installed_packages'] = installed_packages_metadata
 
-        return self.metadata
+            return self.metadata

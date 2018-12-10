@@ -10,7 +10,7 @@ import tarfile
 
 from colcon_bundle.installer import add_installer_arguments, \
     BundleInstallerContext, get_bundle_installer_extensions
-from colcon_bundle.verb._utilities import update_shebang, update_symlinks
+from colcon_bundle.verb._utilities import update_shebang, update_symlinks, Timer
 from colcon_core.argument_parser.destination_collector import \
     DestinationCollectorDecorator
 from colcon_core.event_handler import add_event_handler_arguments
@@ -26,6 +26,7 @@ from colcon_core.verb import check_and_mark_build_tool, \
 from colcon_core.verb.build import update_object
 
 from . import check_and_mark_bundle_tool, logger
+import time
 
 
 class BundlePackageArguments:
@@ -188,47 +189,50 @@ class BundleVerb(VerbExtensionPoint):
         archive_tar_gz_path = os.path.join(bundle_base, 'output.tar.gz')
 
         if include_sources:
-            sources_tar_gz_path = os.path.join(bundle_base, 'sources.tar.gz')
+            with Timer('sources tarball'):
+                sources_tar_gz_path = os.path.join(bundle_base, 'sources.tar.gz')
+                with tarfile.open(
+                        sources_tar_gz_path, 'w:gz', compresslevel=5) as archive:
+                    for name, directory in self.installer_cache_dirs.items():
+                        sources_path = os.path.join(directory, 'sources')
+                        if not os.path.exists(sources_path):
+                            continue
+                        for filename in os.listdir(sources_path):
+                            file_path = os.path.join(sources_path, filename)
+                            archive.add(
+                                file_path,
+                                arcname=os.path.join(
+                                    name, os.path.basename(file_path)))
+        with Timer('create metadata and bundle tar'):
+            with tarfile.open(metadata_tar_path, 'w') as archive:
+                archive.add(os.path.join(bundle_base, 'installer_metadata.json'),
+                            arcname='installers.json')
+
+            if os.path.exists(bundle_tar_path):
+                os.remove(bundle_tar_path)
+
+            with tarfile.open(bundle_tar_path, 'w') as bundle_tar:
+                logger.info(
+                    'Creating tar of {path}'.format(path=staging_path))
+                for name in os.listdir(staging_path):
+                    some_path = os.path.join(staging_path, name)
+                    bundle_tar.add(some_path, arcname=os.path.basename(some_path))
+
+
+        with Timer('gzip metadata and bundle'):
             with tarfile.open(
-                    sources_tar_gz_path, 'w:gz', compresslevel=5) as archive:
-                for name, directory in self.installer_cache_dirs.items():
-                    sources_path = os.path.join(directory, 'sources')
-                    if not os.path.exists(sources_path):
-                        continue
-                    for filename in os.listdir(sources_path):
-                        file_path = os.path.join(sources_path, filename)
-                        archive.add(
-                            file_path,
-                            arcname=os.path.join(
-                                name, os.path.basename(file_path)))
+                    archive_tar_gz_path, 'w:gz', compresslevel=5) as archive:
+                assets_directory = os.path.join(
+                    os.path.dirname(os.path.realpath(__file__)), 'assets')
+                archive.add(
+                    os.path.join(assets_directory, 'version'), arcname='version')
+                archive.add(
+                    metadata_tar_path, arcname=os.path.basename(metadata_tar_path))
+                archive.add(
+                    bundle_tar_path, arcname=os.path.basename(bundle_tar_path))
 
-        with tarfile.open(metadata_tar_path, 'w') as archive:
-            archive.add(os.path.join(bundle_base, 'installer_metadata.json'),
-                        arcname='installers.json')
-
-        if os.path.exists(bundle_tar_path):
+            os.remove(metadata_tar_path)
             os.remove(bundle_tar_path)
-
-        with tarfile.open(bundle_tar_path, 'w') as bundle_tar:
-            logger.info(
-                'Creating tar of {path}'.format(path=staging_path))
-            for name in os.listdir(staging_path):
-                some_path = os.path.join(staging_path, name)
-                bundle_tar.add(some_path, arcname=os.path.basename(some_path))
-
-        with tarfile.open(
-                archive_tar_gz_path, 'w:gz', compresslevel=5) as archive:
-            assets_directory = os.path.join(
-                os.path.dirname(os.path.realpath(__file__)), 'assets')
-            archive.add(
-                os.path.join(assets_directory, 'version'), arcname='version')
-            archive.add(
-                metadata_tar_path, arcname=os.path.basename(metadata_tar_path))
-            archive.add(
-                bundle_tar_path, arcname=os.path.basename(bundle_tar_path))
-
-        os.remove(metadata_tar_path)
-        os.remove(bundle_tar_path)
 
         logger.info('Archiving complete')
 
