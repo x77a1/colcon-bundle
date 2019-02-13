@@ -95,6 +95,9 @@ class AptBundleInstallerExtension(BundleInstallerExtensionPoint):
         apt.apt_pkg.config.set('Dir::Etc::TrustedParts',
                                apt.apt_pkg.config.find_file(
                                    'Dir::Etc::TrustedParts'))
+        apt.apt_pkg.config.set('Acquire::BrokenProxy', 'true')
+        apt.apt_pkg.config.set('Acquire::http::Pipeline-Depth', '0')
+        apt.apt_pkg.config.set('Acquire::http::No-Cache', 'true')
         apt.apt_pkg.config.clear('APT::Update::Post-Invoke-Success')
 
         sources_list_file = os.path.join(self._cache_dir, 'etc', 'apt',
